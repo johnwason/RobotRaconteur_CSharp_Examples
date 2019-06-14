@@ -5,7 +5,7 @@ using System.Text;
 using Emgu.CV;
 using Emgu.CV.UI;
 using Emgu.CV.Structure;
-using experimental.createwebcam;
+using experimental.createwebcam2;
 using RobotRaconteur;
 using System.Threading;
 using System.Runtime.InteropServices;
@@ -17,52 +17,25 @@ namespace SimpleWebcamService
     class Program
     {
         static void Main(string[] args)
-        {
-            RobotRaconteurNativeLoader.Load();
-
+        {            
             //Create a tuple list with the camera index/camera name and
             //then initalize the host, which in turn initializes the cameras
             Tuple<int, string>[] webcamnames = new Tuple<int, string>[] {new Tuple<int,string>(0,"Left"), new Tuple<int,string>(1,"Right") };
             WebcamHost_impl host = new WebcamHost_impl(webcamnames);
 
-            //Local transport
-            LocalTransport t1 = new LocalTransport();
-            t1.StartServerAsNodeName("experimental.createwebcam.WebcamHost");
-            RobotRaconteurNode.s.RegisterTransport(t1);
-
-            //Initialize the TCP transport and start listening for connections on port 2355
-            TcpTransport t2 = new TcpTransport();
-            t2.StartServer(2355);
-
-            //Attempt to load TLS certificate
-            try
+            // Use ServerNodeSetup to initialize server node
+            using (new ServerNodeSetup("experimental.createwebcam2", 2355))
             {
-                t2.LoadTlsNodeCertificate();
+                //Register the webcam host object as a service so that it can be connected to
+                RobotRaconteurNode.s.RegisterService("Webcam", "experimental.createwebcam2", host);
+
+                //Stay open until shut down
+                Console.WriteLine("Webcam server started. Connect with URL rr+tcp://localhost:2355?service=Webcam Press enter to exit");
+                Console.ReadLine();
+
+                //Shutdown
+                host.Shutdown();
             }
-            catch
-            {
-                Console.WriteLine("warning: could not load TLS certificate");
-            }
-
-            //Enable auto-discovery announcements
-            t2.EnableNodeAnnounce();
-
-            //Register the TCP channel
-            RobotRaconteurNode.s.RegisterTransport(t2);
-
-            //Register the Webcam_interface type so that the node can understand the service definition
-            RobotRaconteurNode.s.RegisterServiceType(new experimental__createwebcamFactory());
-
-            //Register the webcam host object as a service so that it can be connected to
-            RobotRaconteurNode.s.RegisterService("Webcam", "experimental.createwebcam", host);
-
-            //Stay open until shut down
-            Console.WriteLine("Webcam server started. Connect with URL rr+tcp://localhost:2355?service=Webcam Press enter to exit");
-            Console.ReadLine();
-
-            //Shutdown
-            host.Shutdown();
-            RobotRaconteurNode.s.Shutdown();
         }
     }
 
@@ -131,15 +104,15 @@ namespace SimpleWebcamService
     }
 
     //Class to implement the "Webcam" Robot Raconteur object
-    public class Webcam_impl : Webcam
+    public class Webcam_impl : Webcam_default_impl
     {
 
-        Capture _capture;
+        VideoCapture _capture;
 
         //Initialize the webcam
         public Webcam_impl(int cameraid, string cameraname)
         {
-            _capture = new Capture(cameraid);
+            _capture = new VideoCapture(cameraid);
             _capture.SetCaptureProperty(Emgu.CV.CvEnum.CapProp.FrameWidth, 320);
             _capture.SetCaptureProperty(Emgu.CV.CvEnum.CapProp.FrameHeight, 240);
             _Name = cameraname;
@@ -157,24 +130,20 @@ namespace SimpleWebcamService
         string _Name="";
         
         //"Name" property
-        public string Name {
+        public override string Name {
             get
             {
                 return _Name;
-            }
-            set
-            {
-                throw new InvalidOperationException("Read only property");
-            }
+            }            
         }
 
         //Function to capture a frame and return the Robot Raconteur WebcamImage structure
-        public WebcamImage CaptureFrame()
+        public override WebcamImage CaptureFrame()
         {
             lock (this)
             {
                 var i = _capture.QueryFrame();
-                byte[] data = i.GetData(); 
+                byte[] data = (byte[])i.GetRawData(); 
 
                 WebcamImage o = new WebcamImage();
                 o.height = i.Height;
@@ -189,7 +158,7 @@ namespace SimpleWebcamService
         bool streaming = false;
 
         //Start streaming frames
-        public void StartStreaming()
+        public override void StartStreaming()
         {
             lock (this)
             {
@@ -203,7 +172,7 @@ namespace SimpleWebcamService
         }
 
         //Stop the image streaming frame
-        public void StopStreaming()
+        public override void StopStreaming()
         {
             lock (this)
             {
@@ -221,56 +190,42 @@ namespace SimpleWebcamService
                 //Capture a frame
                 WebcamImage frame = CaptureFrame();
 
-                //Loop through all connected PipeEndpoints and send data
-                lock (_FrameStream_endpoints)
+                if (rrvar_FrameStream != null)
                 {
-                    uint[] endpoints = _FrameStream_endpoints.Keys.ToArray();
-                    foreach(uint ep in endpoints)
-                    {
-                        if (_FrameStream_endpoints.ContainsKey(ep))
-                        {
-                            Dictionary<int, Pipe<WebcamImage>.PipeEndpoint> dict1 = _FrameStream_endpoints[ep];
-                            int[] indices=dict1.Keys.ToArray();
-                            foreach (int ind in indices)
-                            {
-                                if (dict1.ContainsKey(ind))
-                                {
-                                    Pipe<WebcamImage>.PipeEndpoint pipe_ep = null;
-                                    try
-                                    {
-                                        pipe_ep = dict1[ind];
-
-                                        //Send the data to the connected PipeEndpoint here
-                                        pipe_ep.SendPacket(frame);
-                                    }
-                                    catch
-                                    {
-                                        //If there is an error sending the data to the pipe,
-                                        //assume the pipe has been closed.
-                                        FrameStream_pipeclosed(pipe_ep);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    rrvar_FrameStream.SendPacket(frame);
                 }
+               
                 Thread.Sleep(100);
             }
 
         }
 
+        //Override FrameStream to set MaximumBacklog
+        public override Pipe<WebcamImage> FrameStream
+        {
+            get
+            {
+                return base.FrameStream;
+            }
+            set
+            {
+                base.FrameStream = value;
+                rrvar_FrameStream.MaximumBacklog = 3;
+            }
+        }
+
         byte[] _buffer = new byte[0];
-        MultiDimArray _multidimbuffer = new MultiDimArray(new int[3] {0,0,0}, new byte[0]);
+        MultiDimArray _multidimbuffer = new MultiDimArray(new uint[3] {0,0,0}, new byte[0]);
 
         //Capture a frame and save it to the memory buffers
-        public WebcamImage_size CaptureFrameToBuffer()
+        public override WebcamImage_size CaptureFrameToBuffer()
         {
             WebcamImage image = CaptureFrame();
             _buffer = image.data;
 
             //Rearrange the data into the correct format for MATLAB arrays
             byte[] mdata=new byte[image.height*image.width*3];
-            MultiDimArray mdbuf = new MultiDimArray(new int[] {image.height, image.width, 3 }, mdata);
+            MultiDimArray mdbuf = new MultiDimArray(new uint[] {(uint)image.height, (uint)image.width, 3 }, mdata);
             for (int channel=0; channel < 3; channel++)
             {
                 int channel0 = image.height * image.width * channel;
@@ -293,84 +248,25 @@ namespace SimpleWebcamService
             return size;
         }
 
-        public Pipe<WebcamImage> _FrameStream=null;
-
-        public Dictionary<uint,Dictionary<int,Pipe<WebcamImage>.PipeEndpoint>> _FrameStream_endpoints=new Dictionary<uint,Dictionary<int,Pipe<WebcamImage>.PipeEndpoint>>();
-
-        //Property for the FrameStream pipe
-        public Pipe<WebcamImage> FrameStream {
-            get
-            {
-                return _FrameStream;
-            }
-            set
-            {
-                _FrameStream = value;
-                //Set the callback function for when PipeEndpoints connect
-                _FrameStream.PipeConnectCallback = FrameStream_pipeconnect;
-            }
-        }
-
-        //Function called when a PipeEndpoint connects
-        private void FrameStream_pipeconnect(Pipe<WebcamImage>.PipeEndpoint pipe_ep)
-        {
-            lock (_FrameStream_endpoints)
-            {
-                //Store the PipeEndpoint in nested dictionaries by endpoint and index
-                if (!_FrameStream_endpoints.ContainsKey(pipe_ep.Endpoint))
-                {
-                    _FrameStream_endpoints.Add(pipe_ep.Endpoint, new Dictionary<int, Pipe<WebcamImage>.PipeEndpoint>());
-                }
-
-                Dictionary<int, Pipe<WebcamImage>.PipeEndpoint> dict1=_FrameStream_endpoints[pipe_ep.Endpoint];
-                dict1.Add(pipe_ep.Index, pipe_ep);
-                pipe_ep.PipeCloseCallback = FrameStream_pipeclosed;
-                
-            }
-        }
-
-        //Remove closed PipeEndpoints from the dictionaries
-        private void FrameStream_pipeclosed(Pipe<WebcamImage>.PipeEndpoint pipe_ep)
-        {
-            lock (_FrameStream_endpoints)
-            {
-                try
-                {
-                    Dictionary<int, Pipe<WebcamImage>.PipeEndpoint> dict1 = _FrameStream_endpoints[pipe_ep.Endpoint];
-                    dict1.Remove(pipe_ep.Index);
-                }
-                catch { }
-            }
-        }
-
         //Return an ArrayMemory for the "buffer" data containing the image.
-        public ArrayMemory<byte> buffer {
+        public override ArrayMemory<byte> buffer {
             get
             {
                 //In many cases this ArrayMemory would not be initialized every time,
                 //but for this example return a new ArrayMemory
                 return new ArrayMemory<byte>(_buffer);
             }
-
-            set
-            {
-            }
+           
         }
 
         //Return a MultiDimArray for the "multidimbuffer" data containing the image
-        public MultiDimArrayMemory<byte> multidimbuffer {
+        public override MultiDimArrayMemory<byte> multidimbuffer {
             get
             {
                 //In many cases this MultiDimArrayMemory would not be initialized every time,
                 //but for this example return a new MultiDimArrayMemory
                 return new MultiDimArrayMemory<byte>(_multidimbuffer);
-            }
-            set
-            {
-            }
+            }            
         }
-
-
-
     }
 }

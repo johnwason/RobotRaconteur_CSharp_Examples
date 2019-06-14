@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.IO;
 using System.IO.Ports;
-using experimental.create;
+using experimental.create2;
 using RobotRaconteur;
 
 namespace iRobotCreateService
@@ -17,8 +17,7 @@ namespace iRobotCreateService
     {
         public static Create create;
         static void Main(string[] args)
-        {
-            RobotRaconteurNativeLoader.Load();
+        {            
 
             //Read the serial port name from program arguments
             string port = args[0];
@@ -27,54 +26,27 @@ namespace iRobotCreateService
             create = new Create();
             create.Start(port);
 
-            LocalTransport t1 = new LocalTransport();
-            t1.StartServerAsNodeName("experimental.create.Create");
-            RobotRaconteurNode.s.RegisterTransport(t1);
-
-            //Initialize the TCP transport and start listening for connections on port 2354
-            TcpTransport t2 = new TcpTransport();
-            t2.StartServer(2354);
-
-            //Attempt to load TLS certificate
-            try
+            //Use ServerNodeSetup to initialize server node
+            using (new ServerNodeSetup("experimental.create2", 2354))
             {
-                t2.LoadTlsNodeCertificate();
+                //Register the create object as a service so that it can be connected to
+                RobotRaconteurNode.s.RegisterService("Create", "experimental.create2", create);
+
+                //Stay open until shut down
+                Console.WriteLine("Create server started. Connect with URL rr+tcp://localhost:2354?service=Create Press enter to exit");
+                Console.ReadLine();
+
+                //Shutdown
+                create.Shutdown();
             }
-            catch
-            {
-                Console.WriteLine("warning: could not load TLS certificate");
-            }
-
-            //Enable auto-discovery announcements
-            t2.EnableNodeAnnounce();
-
-            //Register the TCP transport
-            RobotRaconteurNode.s.RegisterTransport(t2);
-
-            //Register the Create_interface type so that the node can understand the service definition
-            RobotRaconteurNode.s.RegisterServiceType(new experimental__createFactory());
-
-            //Register the create object as a service so that it can be connected to
-            RobotRaconteurNode.s.RegisterService("Create", "experimental.create", create);
-
-            //Stay open until shut down
-            Console.WriteLine("Create server started. Connect with URL rr+tcp://localhost:2354?service=Create Press enter to exit");
-            Console.ReadLine();
-
-            //Shutdown
-            create.Shutdown();
-
-            //Shutdown the node.  This must be called or the program won't exit.
-            RobotRaconteurNode.s.Shutdown();
         }
     }
-
 
     //The implementation of the create object.  It implementes Create_interface.Create.  
     //This allows the object to be exposed using the Create_interface
     //service definition.
 
-    public class Create : experimental.create.Create
+    public class Create : experimental.create2.Create_default_impl
     {
         SerialPort port;
 
@@ -270,7 +242,7 @@ namespace iRobotCreateService
         }
 
         //Drive the robot with given velocity and radius
-        public void Drive(short velocity, short radius)
+        public override void Drive(short velocity, short radius)
         {
             lock (port_lock)
             {
@@ -285,7 +257,7 @@ namespace iRobotCreateService
         }
 
         //Event that implements the "Bump" event from the Create interface
-        public event Action Bump;
+        public override event Action Bump;
 
         //Fire the bump event notifying all clients
         private void fire_Bump()
@@ -297,7 +269,7 @@ namespace iRobotCreateService
         private bool streaming = false;
 
         //Stop streaming data from the robot
-        public void StopStreaming()
+        public override void StopStreaming()
         {
             lock (port_lock)
             {
@@ -311,7 +283,7 @@ namespace iRobotCreateService
         uint current_client=0;
 
         //Start streaming data from the robot
-        public void StartStreaming()
+        public override void StartStreaming()
         {
             lock (port_lock)
             {
@@ -329,7 +301,7 @@ namespace iRobotCreateService
         private int m_DistanceTraveled = 0;
 
         //Property for AngleTraveled
-        public int AngleTraveled
+        public override int AngleTraveled
         {
             get
             {
@@ -340,7 +312,7 @@ namespace iRobotCreateService
         }
 
         //Property for DistanceTraveled
-        public int DistanceTraveled
+        public override int DistanceTraveled
         {
             get
             {
@@ -349,107 +321,26 @@ namespace iRobotCreateService
             }
             set { throw new InvalidOperationException("Read only property"); }
         }
-
-
-        //Field and property for the wire.  This should be nearly identical for any use of wires with the difference
-        //being the name of the wire and the type of packet.
-        private RobotRaconteur.Wire<SensorPacket> _packets;
-        public RobotRaconteur.Wire<SensorPacket> packets
-        {
-            get
-            {
-                return _packets;
-            }
-            set
-            {
-                if (_packets != null) throw new InvalidOperationException("Pipe has already been set");
-                _packets = value;
-                //Set the connect callback when clients connect to the wire
-                _packets.WireConnectCallback = WireConnectCallbackFunction;
-            }
-
-        }
-
-        Dictionary<uint, Wire<SensorPacket>.WireConnection> wireconnections = new Dictionary<uint, Wire<SensorPacket>.WireConnection>();
-
-        //When a wire connects connects, add it to the dictionary indexed by endpoint
-        void WireConnectCallbackFunction(Wire<SensorPacket> w, Wire<SensorPacket>.WireConnection wire)
-        {
-
-
-            lock (wireconnections)
-            {
-
-                wireconnections.Add(wire.Endpoint, wire);
-            }
-            wire.WireCloseCallback = WireClosedCallbackFunction;
-
-        }
-
-
-        //Callback when a wire closes
-        void WireClosedCallbackFunction(Wire<SensorPacket>.WireConnection wire)
-        {
-            lock (wireconnections)
-            {
-                wireconnections.Remove(wire.Endpoint);
-            }
-        }
-
-        //Cycle through all the wire connections and send the SensorPacket.  If there is an error, close the wire connection.
+        
+       
         void SendSensorPacket(byte id, byte[] data)
         {
-
-
+            
             SensorPacket p = new SensorPacket();
             p.ID = id;
             p.Data = data;
 
-            lock (wireconnections)
+            if (rrvar_packets!=null)
             {
-                uint[] ep = wireconnections.Keys.ToArray();
-
-                foreach (uint e in ep)
-                {
-                    
-                        Wire<SensorPacket>.WireConnection wend = wireconnections[e];
-
-                        try
-                        {
-                            wend.OutValue = p;
-
-
-
-                        }
-                        catch
-                        {
-                            try
-                            {
-                                wend.Close();
-                            }
-                            catch { }
-
-                            try
-                            {
-                                wireconnections.Remove(e);
-                            }
-                            catch { }
-                        }                   
-
-                }
-
-
-
+                rrvar_packets.OutValue = p;
             }
-
-
         }
 
 
 
         byte m_Bumpers;
         //Property for the bumpers
-        public byte Bumpers
+        public override byte Bumpers
         {
             get
             {
@@ -462,22 +353,6 @@ namespace iRobotCreateService
         }
 
         
-        Callback<Func<int, int, byte[]>> _play_callback;
-        
-        //Property to store the callback server
-        public Callback<Func<int, int, byte[]>> play_callback {
-            get
-            {
-                return _play_callback;
-            }
-
-            set
-            {
-                _play_callback=value;
-            }
-        }
-
-
         //Function to call the "play" callback.
         private void play()
         {

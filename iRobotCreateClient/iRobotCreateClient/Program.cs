@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using RobotRaconteur;
-using experimental.create;
+using experimental.create2;
 using System.Threading;
 
 namespace iRobotCreateClient
@@ -16,46 +16,37 @@ namespace iRobotCreateClient
     {
         static void Main(string[] args)
         {
-            //Load the native part of the Robot Raconteur software.  This must be called
-            //before any other Robot Raconteur commands
-            RobotRaconteurNativeLoader.Load();
+            //Use ClientNodeSetup to configure the node
+            using (new ClientNodeSetup())
+            {                
+                //Connect to the service
+                Create c = (Create)RobotRaconteurNode.s.ConnectService("rr+tcp://localhost:2354/?service=Create", null, null, null, "experimental.create2.Create");
 
-            //Create and register a TcpTransport
-            TcpTransport t = new TcpTransport();
-            RobotRaconteurNode.s.RegisterTransport(t);
-            //Register the Create_interface service type
-            RobotRaconteurNode.s.RegisterServiceType(new experimental__createFactory());
+                //Start streaming data to this client
+                c.StartStreaming();
 
-            //Connect to the service
-            Create c = (Create)RobotRaconteurNode.s.ConnectService("tcp://localhost:2354/{0}/Create",null,null,null,"experimental.create.Create");
+                //Set an event handler for the "Bump" event
+                c.Bump += Bump;
 
-            //Start streaming data to this client
-            c.StartStreaming();
+                //Connect the "packets" wire and add a value changed event handler
+                Wire<SensorPacket>.WireConnection wire = c.packets.Connect();
+                wire.WireValueChanged += wire_changed;
 
-            //Set an event handler for the "Bump" event
-            c.Bump += Bump;
+                //Set a function to be used by the callback.  This function will be called
+                //when the service calls a callback with the endpoint corresponding to this
+                //client
+                c.play_callback.Function = play_callback;
 
-            //Connect the "packets" wire and add a value changed event handler
-            Wire<SensorPacket>.WireConnection wire = c.packets.Connect();
-            wire.WireValueChanged += wire_changed;
+                //Drive a bit
+                c.Drive(200, 5000);
+                Thread.Sleep(1000);
+                c.Drive(0, 0);
+                Thread.Sleep(20000);
 
-            //Set a function to be used by the callback.  This function will be called
-            //when the service calls a callback with the endpoint corresponding to this
-            //client
-            c.play_callback.Function = play_callback;
-
-            //Drive a bit
-            c.Drive(200, 5000);
-            Thread.Sleep(1000);
-            c.Drive(0, 0);
-            Thread.Sleep(20000);
-
-            //Close the wire and stop streaming data
-            wire.Close();
-            c.StopStreaming();
-            
-            //Shutdown Robot Raconteur.  This MUST be called on exit or the program will crash
-            RobotRaconteurNode.s.Shutdown();
+                //Close the wire and stop streaming data
+                wire.Close();
+                c.StopStreaming();
+            }
 
         }
 

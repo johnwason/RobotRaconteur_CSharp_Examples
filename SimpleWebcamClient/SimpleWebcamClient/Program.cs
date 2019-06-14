@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using RobotRaconteur;
-using experimental.createwebcam;
+using experimental.createwebcam2;
 using Emgu.CV;
 using Emgu.CV.UI;
 using Emgu.CV.Structure;
@@ -17,37 +17,28 @@ namespace SimpleWebcamClient
     {
         static void Main(string[] args)
         {
-            //Load the native part of Robot Raconteur
-            RobotRaconteurNativeLoader.Load();
+            //Use ClientNodeSetup to initialize node
+            using (new ClientNodeSetup())
+            {
 
-            //Register the service type
-            RobotRaconteurNode.s.RegisterServiceType(new experimental__createwebcamFactory());
+                //Connect to the service
+                WebcamHost c_host = (WebcamHost)RobotRaconteurNode.s.ConnectService("rr+tcp://localhost:2355?service=Webcam", objecttype: "experimental.createwebcam2.WebcamHost");
 
-            //Register the transport
-            TcpTransport t = new TcpTransport();
-            RobotRaconteurNode.s.RegisterTransport(t);
+                //Get the Webcam objects from the "Webcams" objref
+                Webcam c1 = c_host.get_Webcams(0);
+                Webcam c2 = c_host.get_Webcams(1);
 
-            //Connect to the service
-            WebcamHost c_host=(WebcamHost)RobotRaconteurNode.s.ConnectService("rr+tcp://localhost:2355?service=Webcam", objecttype: "experimental.createwebcam.WebcamHost");
+                //Capture an image and convert to OpenCV image type
+                Image<Bgr, byte> frame1 = WebcamImageToCVImage(c1.CaptureFrame());
+                Image<Bgr, byte> frame2 = WebcamImageToCVImage(c1.CaptureFrame());
 
-            //Get the Webcam objects from the "Webcams" objref
-            Webcam c1 = c_host.get_Webcams(0);
-            Webcam c2 = c_host.get_Webcams(1);
+                //Show image
+                CvInvoke.Imshow(c1.Name, frame1);
+                CvInvoke.Imshow(c2.Name, frame2);
 
-            //Capture an image and convert to OpenCV image type
-            Image<Bgr, byte> frame1 = WebcamImageToCVImage(c1.CaptureFrame());
-            Image<Bgr, byte> frame2 = WebcamImageToCVImage(c1.CaptureFrame());
-
-            //Show image
-            CvInvoke.Imshow(c1.Name,frame1);
-            CvInvoke.Imshow(c2.Name, frame2);
-            
-            //Wait for enter to be pressed
-            CvInvoke.WaitKey(0);
-
-            //Shutdown Robot Raconteur
-            RobotRaconteurNode.s.Shutdown();            
-
+                //Wait for enter to be pressed
+                CvInvoke.WaitKey(0);
+            }
         }
 
         //Convert WebcamImage to OpenCV format
